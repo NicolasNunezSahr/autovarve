@@ -1,2 +1,2 @@
 # autovarve
-Analyze sediment cores using computer vision
+Analyze sediment cores using computer vision. 
