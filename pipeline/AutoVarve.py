@@ -70,6 +70,10 @@ class AutoVarve(object):
         else:
             raise Exception('Kernel config not allowed.')
 
+        if 'pixel_change_threshold' in self.config_file:
+            self.pixel_change_threshold = self.config_file['pixel_change_threshold']
+        else:
+            self.pixel_change_threshold = 0.05  # Default
 
     @staticmethod
     def load_config_file(config_file):
@@ -104,9 +108,9 @@ class AutoVarve(object):
 
         # Maybe loop over this section to compute a histogram for each threshold value
         # Count varves
-        threshold = 0.05
+        threshold = self.pixel_change_threshold
         varve_counts = self.generate_varve_counts(image_samples=image_samples, threshold=threshold)
-
+        sys.exit()
         # Save varve_counts
         self.save_counts(varve_counts)
 
@@ -195,24 +199,67 @@ class AutoVarve(object):
         :param image_tensors: [batch, channels, height, width]
         :return:
         """
-        b, c, w, h = image_tensors.shape
+        b, c, h, w = image_tensors.shape
 
-        vertical_group_size = self.vertical_group_size
-        # Step 1: Average pixels vertically
-        reshaped = image_tensors.reshape(b, h // vertical_group_size, vertical_group_size, width)
-        vertically_averaged = reshaped.mean(dim=2)  # Shape: [1, 8220, 2000]
+        # Step 1: Transform pixels vertically
+        if self.vertical_kernel_function == 'MEAN':
+            reshaped = image_tensors.reshape(b, c, h // self.vertical_kernel_size, self.vertical_kernel_size, w)
+            vertically_transformed = reshaped.mean(dim=3)  # Shape: [1, 1, 20000, 1000]
+        elif self.vertical_kernel_function == 'MEDIAN':
+            vertically_transformed = []
+            for i in range(h // self.vertical_kernel_size):  # h // self.vertical_kernel_size groups
+                start_idx = i * self.vertical_kernel_size
+                end_idx = (i + 1) * self.vertical_kernel_size
+                group_median = torch.median(image_tensors[:, :, start_idx:end_idx, :], dim=2).values
+                vertically_transformed.append(group_median.unsqueeze(2))
+            vertically_transformed = torch.cat(vertically_transformed, dim=2)
+        elif self.vertical_kernel_function == 'MAX':
+            reshaped = image_tensors.reshape(b, c, h // self.vertical_kernel_size, w)
+            vertically_transformed = reshaped.max(dim=2)  # Shape: [1, 1, 20000, 1000]
+        else:
+            raise Exception(f'Kernel function {self.vertical_kernel_function} not implemented')
+        image_tensors = vertically_transformed
 
+        if self.verbose:
+            print(f'(3.1)\tTRANSFORM: Vertical transformation with kernel size {self.vertical_kernel_size} and function'
+                  f' {self.vertical_kernel_function} resulted in tensor of shape: {image_tensors.shape}')
+
+        b, c, h2, w = image_tensors.shape
+        # Step 2: Transform horizontally
+        if self.horizontal_kernel_function == 'MEAN':
+            reshaped = image_tensors.reshape(b, c, h2, w // self.horizontal_kernel_size, self.horizontal_kernel_size)
+            horizontally_transformed = reshaped.mean(dim=4)  # Shape: [1, 1, 20000, 1000]
+        elif self.horizontal_kernel_function == 'MEDIAN':
+            horizontally_transformed = []
+            for i in range(w // self.horizontal_kernel_size):  # w // self.horizontal_kernel_size groups
+                start_idx = i * self.horizontal_kernel_size
+                end_idx = (i + 1) * self.horizontal_kernel_size
+                group_median = torch.median(image_tensors[:, :, :, start_idx:end_idx], dim=3).values
+                horizontally_transformed.append(group_median.unsqueeze(3))
+            horizontally_transformed = torch.cat(horizontally_transformed, dim=3)
+        elif self.horizontal_kernel_function == 'MAX':
+            reshaped = image_tensors.reshape(b, c, h2, w // self.horizontal_kernel_size)
+            horizontally_transformed = reshaped.max(dim=3)  # Shape: [1, 1, 20000, 1000]
+        else:
+            raise Exception(f'Kernel function {self.horizontal_kernel_function} not implemented')
+        image_tensors = horizontally_transformed
+
+        if self.verbose:
+            print(f'(4.2)\tTRANSFORM: Horizontal transformation with kernel size {self.horizontal_kernel_size} and function '
+                  f'{self.horizontal_kernel_function} resulted in tensor of shape: {image_tensors.shape}')
+
+        # TODO: implement avg_pool2d
 
         return image_tensors
 
     def generate_samples(self, image_tensors):
         """
-        Say you have a transformed grayscale image tensor of [120, 120]. Each of the 120 columns is potentially a
-        different data sample, with its own total number of varves. The reliability of the overall varve count relies
-        on the fact that each of these 120 columns should be correlated if the color is consistent throughout the
-        horizontal core, which tends to be true. Sometimes the darker part of the varve is diagonal, which means the
-        pixel values are correlated with some lag/lead. Do we keep the 120 columns or do we further combine pixel
-        values horizontally?
+        Say you have a transformed grayscale image tensor of shape [1, 1, 2744, 5]. Each of the 120 columns is
+        potentially a different data sample, with its own total number of varves. The reliability of the overall varve
+        count relies on the fact that each of these 120 columns should be correlated if the color is consistent
+        throughout the horizontal core, which tends to be true. Sometimes the darker part of the varve is diagonal,
+        which means the pixel values are correlated with some lag/lead. Do we keep the 120 columns or do we further
+        combine pixel values horizontally?
         :param image_tensors:
         :return:
         """
@@ -224,7 +271,11 @@ class AutoVarve(object):
         :param image_samples:
         :return:
         """
-        return image_samples
+        changes = image_samples[:, :, 1:, :] - image_samples[:, :, :-1, :]
+        print(changes)
+        if self.verbose:
+            print(f'\n(4.1)\tComputing derivative resulted in a tensor of shape {changes.shape}')
+        return changes
 
     def varve_counts_by_color_threshold(self, sample_changes, threshold):
         """
@@ -233,7 +284,8 @@ class AutoVarve(object):
         :param threshold:
         :return:
         """
-        varve_counts = 'Something'
+        above_threshold = sample_changes > threshold
+        varve_counts = above_threshold.sum(dim=2, keepdim=True)
         return varve_counts
 
     def generate_varve_counts(self, image_samples, threshold):
@@ -246,7 +298,9 @@ class AutoVarve(object):
 
         if threshold is None:
             threshold = 0.05
-        varve_counts = self.varve_counts_by_color_threshold(sample_changes, threshold=threshold)
+        varve_counts = self.varve_counts_by_color_threshold(sample_changes, threshold=threshold).squeeze()
+        if self.verbose:
+            print(f'Columnwise counts above {threshold} threshold: {varve_counts}')
         return varve_counts
 
     def plot_counts_histogram(self, varve_counts):

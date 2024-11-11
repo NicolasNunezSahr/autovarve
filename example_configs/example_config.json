@@ -6,16 +6,17 @@
     "left": 2000,
     "right": 1025,
     "top": 135,
-    "bottom": 43667
+    "bottom": 43673
   },
   "kernel_config": {
     "horizontal": {
-      "size": 200,
-      "function": "average"
+      "size": 65,
+      "function": "MEAN"
     },
     "vertical": {
       "size": 8,
-      "function":"median"
+      "function":"MEDIAN"
     }
-  }
+  },
+  "pixel_change_threshold": 0.055
 }
