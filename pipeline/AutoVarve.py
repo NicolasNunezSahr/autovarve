@@ -14,6 +14,7 @@ import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
 
 ALLOWED_MODES = ['RGB', 'GRAY']
+ALLOWED_KERNEL_FUNCTIONS = ['MEAN', 'MEDIAN', 'MAX']
 
 
 class AutoVarve(object):
@@ -51,6 +52,23 @@ class AutoVarve(object):
             for i, direction in enumerate(['left', 'right', 'top', 'bottom']):
                 if direction in self.config_file['crop']:
                     self.crop[i] = int(self.config_file['crop'][direction])
+
+        if ('kernel_config' in self.config_file
+                and all([side in self.config_file['kernel_config'] for side in ['horizontal', 'vertical']])
+                and all([all([key in self.config_file['kernel_config'][side]
+                              for side in ['horizontal', 'vertical']])
+                         for key in ['size', 'function']])):
+            self.horizontal_kernel_size = int(self.config_file['kernel_config']['horizontal']['size'])
+            self.vertical_kernel_size = int(self.config_file['kernel_config']['vertical']['size'])
+
+            if all([self.config_file['kernel_config'][side]['function'] in ALLOWED_KERNEL_FUNCTIONS
+                    for side in ['vertical', 'horizontal']]):
+                self.horizontal_kernel_function = self.config_file['kernel_config']['horizontal']['function']
+                self.vertical_kernel_function = self.config_file['kernel_config']['vertical']['function']
+            else:
+                raise Exception(f'Kernel function in config file must be one of: {ALLOWED_KERNEL_FUNCTIONS}')
+        else:
+            raise Exception('Kernel config not allowed.')
 
 
     @staticmethod
@@ -177,6 +195,14 @@ class AutoVarve(object):
         :param image_tensors: [batch, channels, height, width]
         :return:
         """
+        b, c, w, h = image_tensors.shape
+
+        vertical_group_size = self.vertical_group_size
+        # Step 1: Average pixels vertically
+        reshaped = image_tensors.reshape(b, h // vertical_group_size, vertical_group_size, width)
+        vertically_averaged = reshaped.mean(dim=2)  # Shape: [1, 8220, 2000]
+
+
         return image_tensors
 
     def generate_samples(self, image_tensors):

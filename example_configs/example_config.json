@@ -7,5 +7,15 @@
     "right": 1025,
     "top": 135,
     "bottom": 43667
+  },
+  "kernel_config": {
+    "horizontal": {
+      "size": 200,
+      "function": "average"
+    },
+    "vertical": {
+      "size": 8,
+      "function":"median"
+    }
   }
 }
