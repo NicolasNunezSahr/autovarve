@@ -1,0 +1,11 @@
+{
+  "verbose": 1,
+  "mode":  "GRAY",
+  "scale_pixel_value_max": 1,
+  "crop": {
+    "left": 2000,
+    "right": 1025,
+    "top": 135,
+    "bottom": 43667
+  }
+}

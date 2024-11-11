@@ -1,5 +1,19 @@
 import os
 import sys
+import json
+import torch
+import torchvision
+from torchvision.io import read_image, ImageReadMode, decode_image
+import torchvision.transforms as T
+import os
+import torch.nn.functional as F
+import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+import numpy as np
+from matplotlib.colors import LinearSegmentedColormap
+
+ALLOWED_MODES = ['RGB', 'GRAY']
 
 
 class AutoVarve(object):
@@ -9,7 +23,50 @@ class AutoVarve(object):
         else:
             self.image_directory = image_directory
 
-        self.config_file = config_file
+        self.config_file = self.load_config_file(config_file)
+
+        # Define mode
+        if 'mode' in self.config_file and self.config_file['mode'] in ALLOWED_MODES:
+            self.mode = self.config_file['mode']
+        else:
+            if self.config_file['mode'] not in ALLOWED_MODES:
+                raise Exception(f'Config file contains invalid \'mode\'. Allowed modes are {ALLOWED_MODES}, and found '
+                                f'{self.config_file["mode"]}')
+            self.mode = 'GRAY'  # Default
+
+        # Define verbosity
+        if 'verbose' in self.config_file:
+            self.verbose = int(self.config_file['verbose'])
+        else:
+            self.verbose = 0  # Default
+
+        # Preprocessing params
+        if 'scale_pixel_value_max' in self.config_file:
+            self.scale_pixel_value_max = int(self.config_file['scale_pixel_value_max'])
+        else:
+            self.scale_pixel_value_max = None  # Do not scale
+
+        self.crop = [0] * 4  # Default to no cropping (order: [left, right, top, bottom])
+        if 'crop' in self.config_file:
+            for i, direction in enumerate(['left', 'right', 'top', 'bottom']):
+                if direction in self.config_file['crop']:
+                    self.crop[i] = int(self.config_file['crop'][direction])
+
+
+    @staticmethod
+    def load_config_file(config_file):
+        """
+        Parse config file into dict
+        :param config_file:
+        :return:
+        """
+        if not (os.path.isfile(config_file) and os.access(config_file, os.R_OK)):
+            raise Exception(
+                f"Config file {config_file} does not exist or is not readable. Please provide a valid config file."
+            )
+        with open(config_file, "r") as f:
+            config_dict = json.load(f)
+        return config_dict
 
     def execute(self):
         # First step is to load image files in images directory
@@ -43,8 +100,22 @@ class AutoVarve(object):
         Load images from png format into tensor. Must decide on a loading mode, whether RGB or grayscale.
         :return:
         """
-        image_tensors = None
-        return image_tensors
+
+        all_image_tensors = torch.zeros((1, 1), dtype=torch.float32)
+        for i, image_name in enumerate(os.listdir(self.image_directory)):
+            image_path = os.path.join(self.image_directory, image_name)
+            single_image_tensor = decode_image(image_path, mode=self.mode)
+            if i == 0:
+                # Read first image to get dimensions
+                c, h, w = single_image_tensor.shape
+                # Initialize tensor to store all images
+                batch_size = len(os.listdir(self.image_directory))
+                all_image_tensors = torch.zeros((batch_size, c, h, w), dtype=torch.float32)
+            all_image_tensors[i] = single_image_tensor
+
+        if self.verbose > 0:
+            print(f'(1.1)\tUPLOADING: Loaded tensor of shape: {all_image_tensors.shape}')
+        return all_image_tensors
 
     def preprocess_images(self, image_tensors):
         """
@@ -56,6 +127,24 @@ class AutoVarve(object):
         :param image_tensors: [batch, channels, height, width]
         :return:
         """
+        if self.scale_pixel_value_max is not None:
+            # Convert Tensor to Float and scale
+            max_value = image_tensors.max()  # Get current max value, assuming it shows up in the image
+            image_tensors = image_tensors.float() * (self.scale_pixel_value_max / max_value)
+            if self.verbose:
+                print(f'(2.1)\tPREPROCESSING: Scaling images such that max value is {image_tensors.max()}')
+        else:
+            if self.verbose:
+                print(f'(2.1)\tPREPROCESSING: Skip scaling.')
+        new_max_value = image_tensors.max()
+
+        # Crop images on the left, right, top and bottom
+        image_tensors = image_tensors[:, :, self.crop[2]:-self.crop[3], self.crop[0]:-self.crop[1]]
+        if self.verbose:
+            print(f'(2.2)\tPREPROCESSING: Cropped image so that current shape is {image_tensors.shape}')
+
+        # TODO: Exclude max pixel value
+
         return image_tensors
 
     def save_tensors(self, image_tensors, save_directory=None):
@@ -141,6 +230,12 @@ class AutoVarve(object):
         :return:
         """
         pass
+
+
+if __name__ == '__main__':
+    config_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'example_configs', 'example_config.json')
+    av = AutoVarve(config_file=config_file)
+    av.execute()
 
 
 
