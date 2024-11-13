@@ -13,65 +13,105 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
 
-ALLOWED_MODES = ['RGB', 'GRAY']
-ALLOWED_KERNEL_FUNCTIONS = ['MEAN', 'MEDIAN', 'MAX']
+ALLOWED_MODES = ["RGB", "GRAY"]
+ALLOWED_KERNEL_FUNCTIONS = ["MEAN", "MEDIAN", "MAX"]
 
 
 class AutoVarve(object):
-    def __init__(self, config_file, image_directory=None, ):
+    def __init__(
+        self,
+        config_file,
+        image_directory=None,
+    ):
         if image_directory is None:
-            self.image_directory = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'images')
+            self.image_directory = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)), "data", "images"
+            )
         else:
             self.image_directory = image_directory
 
         self.config_file = self.load_config_file(config_file)
 
         # Define mode
-        if 'mode' in self.config_file and self.config_file['mode'] in ALLOWED_MODES:
-            self.mode = self.config_file['mode']
+        if "mode" in self.config_file and self.config_file["mode"] in ALLOWED_MODES:
+            self.mode = self.config_file["mode"]
         else:
-            if self.config_file['mode'] not in ALLOWED_MODES:
-                raise Exception(f'Config file contains invalid \'mode\'. Allowed modes are {ALLOWED_MODES}, and found '
-                                f'{self.config_file["mode"]}')
-            self.mode = 'GRAY'  # Default
+            if self.config_file["mode"] not in ALLOWED_MODES:
+                raise Exception(
+                    f"Config file contains invalid 'mode'. Allowed modes are {ALLOWED_MODES}, and found "
+                    f'{self.config_file["mode"]}'
+                )
+            self.mode = "GRAY"  # Default
 
         # Define verbosity
-        if 'verbose' in self.config_file:
-            self.verbose = int(self.config_file['verbose'])
+        if "verbose" in self.config_file:
+            self.verbose = int(self.config_file["verbose"])
         else:
             self.verbose = 0  # Default
 
         # Preprocessing params
-        if 'scale_pixel_value_max' in self.config_file:
-            self.scale_pixel_value_max = int(self.config_file['scale_pixel_value_max'])
+        if "scale_pixel_value_max" in self.config_file:
+            self.scale_pixel_value_max = int(self.config_file["scale_pixel_value_max"])
         else:
             self.scale_pixel_value_max = None  # Do not scale
 
-        self.crop = [0] * 4  # Default to no cropping (order: [left, right, top, bottom])
-        if 'crop' in self.config_file:
-            for i, direction in enumerate(['left', 'right', 'top', 'bottom']):
-                if direction in self.config_file['crop']:
-                    self.crop[i] = int(self.config_file['crop'][direction])
+        self.crop = [
+            0
+        ] * 4  # Default to no cropping (order: [left, right, top, bottom])
+        if "crop" in self.config_file:
+            for i, direction in enumerate(["left", "right", "top", "bottom"]):
+                if direction in self.config_file["crop"]:
+                    self.crop[i] = int(self.config_file["crop"][direction])
 
-        if ('kernel_config' in self.config_file
-                and all([side in self.config_file['kernel_config'] for side in ['horizontal', 'vertical']])
-                and all([all([key in self.config_file['kernel_config'][side]
-                              for side in ['horizontal', 'vertical']])
-                         for key in ['size', 'function']])):
-            self.horizontal_kernel_size = int(self.config_file['kernel_config']['horizontal']['size'])
-            self.vertical_kernel_size = int(self.config_file['kernel_config']['vertical']['size'])
+        if (
+            "kernel_config" in self.config_file
+            and all(
+                [
+                    side in self.config_file["kernel_config"]
+                    for side in ["horizontal", "vertical"]
+                ]
+            )
+            and all(
+                [
+                    all(
+                        [
+                            key in self.config_file["kernel_config"][side]
+                            for side in ["horizontal", "vertical"]
+                        ]
+                    )
+                    for key in ["size", "function"]
+                ]
+            )
+        ):
+            self.horizontal_kernel_size = int(
+                self.config_file["kernel_config"]["horizontal"]["size"]
+            )
+            self.vertical_kernel_size = int(
+                self.config_file["kernel_config"]["vertical"]["size"]
+            )
 
-            if all([self.config_file['kernel_config'][side]['function'] in ALLOWED_KERNEL_FUNCTIONS
-                    for side in ['vertical', 'horizontal']]):
-                self.horizontal_kernel_function = self.config_file['kernel_config']['horizontal']['function']
-                self.vertical_kernel_function = self.config_file['kernel_config']['vertical']['function']
+            if all(
+                [
+                    self.config_file["kernel_config"][side]["function"]
+                    in ALLOWED_KERNEL_FUNCTIONS
+                    for side in ["vertical", "horizontal"]
+                ]
+            ):
+                self.horizontal_kernel_function = self.config_file["kernel_config"][
+                    "horizontal"
+                ]["function"]
+                self.vertical_kernel_function = self.config_file["kernel_config"][
+                    "vertical"
+                ]["function"]
             else:
-                raise Exception(f'Kernel function in config file must be one of: {ALLOWED_KERNEL_FUNCTIONS}')
+                raise Exception(
+                    f"Kernel function in config file must be one of: {ALLOWED_KERNEL_FUNCTIONS}"
+                )
         else:
-            raise Exception('Kernel config not allowed.')
+            raise Exception("Kernel config not allowed.")
 
-        if 'pixel_change_threshold' in self.config_file:
-            self.pixel_change_threshold = self.config_file['pixel_change_threshold']
+        if "pixel_change_threshold" in self.config_file:
+            self.pixel_change_threshold = self.config_file["pixel_change_threshold"]
         else:
             self.pixel_change_threshold = 0.05  # Default
 
@@ -109,7 +149,9 @@ class AutoVarve(object):
         # Maybe loop over this section to compute a histogram for each threshold value
         # Count varves
         threshold = self.pixel_change_threshold
-        varve_counts = self.generate_varve_counts(image_samples=image_samples, threshold=threshold)
+        varve_counts = self.generate_varve_counts(
+            image_samples=image_samples, threshold=threshold
+        )
         sys.exit()
         # Save varve_counts
         self.save_counts(varve_counts)
@@ -132,11 +174,15 @@ class AutoVarve(object):
                 c, h, w = single_image_tensor.shape
                 # Initialize tensor to store all images
                 batch_size = len(os.listdir(self.image_directory))
-                all_image_tensors = torch.zeros((batch_size, c, h, w), dtype=torch.float32)
+                all_image_tensors = torch.zeros(
+                    (batch_size, c, h, w), dtype=torch.float32
+                )
             all_image_tensors[i] = single_image_tensor
 
         if self.verbose > 0:
-            print(f'(1.1)\tUPLOADING: Loaded tensor of shape: {all_image_tensors.shape}')
+            print(
+                f"(1.1)\tUPLOADING: Loaded tensor of shape: {all_image_tensors.shape}"
+            )
         return all_image_tensors
 
     def preprocess_images(self, image_tensors):
@@ -151,19 +197,29 @@ class AutoVarve(object):
         """
         if self.scale_pixel_value_max is not None:
             # Convert Tensor to Float and scale
-            max_value = image_tensors.max()  # Get current max value, assuming it shows up in the image
-            image_tensors = image_tensors.float() * (self.scale_pixel_value_max / max_value)
+            max_value = (
+                image_tensors.max()
+            )  # Get current max value, assuming it shows up in the image
+            image_tensors = image_tensors.float() * (
+                self.scale_pixel_value_max / max_value
+            )
             if self.verbose:
-                print(f'(2.1)\tPREPROCESSING: Scaling images such that max value is {image_tensors.max()}')
+                print(
+                    f"(2.1)\tPREPROCESSING: Scaling images such that max value is {image_tensors.max()}"
+                )
         else:
             if self.verbose:
-                print(f'(2.1)\tPREPROCESSING: Skip scaling.')
+                print(f"(2.1)\tPREPROCESSING: Skip scaling.")
         new_max_value = image_tensors.max()
 
         # Crop images on the left, right, top and bottom
-        image_tensors = image_tensors[:, :, self.crop[2]:-self.crop[3], self.crop[0]:-self.crop[1]]
+        image_tensors = image_tensors[
+            :, :, self.crop[2] : -self.crop[3], self.crop[0] : -self.crop[1]
+        ]
         if self.verbose:
-            print(f'(2.2)\tPREPROCESSING: Cropped image so that current shape is {image_tensors.shape}')
+            print(
+                f"(2.2)\tPREPROCESSING: Cropped image so that current shape is {image_tensors.shape}"
+            )
 
         # TODO: Exclude max pixel value
 
@@ -176,7 +232,9 @@ class AutoVarve(object):
         :return:
         """
         if save_directory is None:
-            save_directory = os.path.join(os.path.dirname(self.image_directory), 'other')
+            save_directory = os.path.join(
+                os.path.dirname(self.image_directory), "other"
+            )
 
     def save_counts(self, varve_counts, save_directory=None):
         """
@@ -185,7 +243,9 @@ class AutoVarve(object):
         :return:
         """
         if save_directory is None:
-            save_directory = os.path.join(os.path.dirname(self.image_directory), 'other')
+            save_directory = os.path.join(
+                os.path.dirname(self.image_directory), "other"
+            )
 
     def transform_images(self, image_tensors):
         """
@@ -202,51 +262,73 @@ class AutoVarve(object):
         b, c, h, w = image_tensors.shape
 
         # Step 1: Transform pixels vertically
-        if self.vertical_kernel_function == 'MEAN':
-            reshaped = image_tensors.reshape(b, c, h // self.vertical_kernel_size, self.vertical_kernel_size, w)
+        if self.vertical_kernel_function == "MEAN":
+            reshaped = image_tensors.reshape(
+                b, c, h // self.vertical_kernel_size, self.vertical_kernel_size, w
+            )
             vertically_transformed = reshaped.mean(dim=3)  # Shape: [1, 1, 20000, 1000]
-        elif self.vertical_kernel_function == 'MEDIAN':
+        elif self.vertical_kernel_function == "MEDIAN":
             vertically_transformed = []
-            for i in range(h // self.vertical_kernel_size):  # h // self.vertical_kernel_size groups
+            for i in range(
+                h // self.vertical_kernel_size
+            ):  # h // self.vertical_kernel_size groups
                 start_idx = i * self.vertical_kernel_size
                 end_idx = (i + 1) * self.vertical_kernel_size
-                group_median = torch.median(image_tensors[:, :, start_idx:end_idx, :], dim=2).values
+                group_median = torch.median(
+                    image_tensors[:, :, start_idx:end_idx, :], dim=2
+                ).values
                 vertically_transformed.append(group_median.unsqueeze(2))
             vertically_transformed = torch.cat(vertically_transformed, dim=2)
-        elif self.vertical_kernel_function == 'MAX':
+        elif self.vertical_kernel_function == "MAX":
             reshaped = image_tensors.reshape(b, c, h // self.vertical_kernel_size, w)
             vertically_transformed = reshaped.max(dim=2)  # Shape: [1, 1, 20000, 1000]
         else:
-            raise Exception(f'Kernel function {self.vertical_kernel_function} not implemented')
+            raise Exception(
+                f"Kernel function {self.vertical_kernel_function} not implemented"
+            )
         image_tensors = vertically_transformed
 
         if self.verbose:
-            print(f'(3.1)\tTRANSFORM: Vertical transformation with kernel size {self.vertical_kernel_size} and function'
-                  f' {self.vertical_kernel_function} resulted in tensor of shape: {image_tensors.shape}')
+            print(
+                f"(3.1)\tTRANSFORM: Vertical transformation with kernel size {self.vertical_kernel_size} and function"
+                f" {self.vertical_kernel_function} resulted in tensor of shape: {image_tensors.shape}"
+            )
 
         b, c, h2, w = image_tensors.shape
         # Step 2: Transform horizontally
-        if self.horizontal_kernel_function == 'MEAN':
-            reshaped = image_tensors.reshape(b, c, h2, w // self.horizontal_kernel_size, self.horizontal_kernel_size)
-            horizontally_transformed = reshaped.mean(dim=4)  # Shape: [1, 1, 20000, 1000]
-        elif self.horizontal_kernel_function == 'MEDIAN':
+        if self.horizontal_kernel_function == "MEAN":
+            reshaped = image_tensors.reshape(
+                b, c, h2, w // self.horizontal_kernel_size, self.horizontal_kernel_size
+            )
+            horizontally_transformed = reshaped.mean(
+                dim=4
+            )  # Shape: [1, 1, 20000, 1000]
+        elif self.horizontal_kernel_function == "MEDIAN":
             horizontally_transformed = []
-            for i in range(w // self.horizontal_kernel_size):  # w // self.horizontal_kernel_size groups
+            for i in range(
+                w // self.horizontal_kernel_size
+            ):  # w // self.horizontal_kernel_size groups
                 start_idx = i * self.horizontal_kernel_size
                 end_idx = (i + 1) * self.horizontal_kernel_size
-                group_median = torch.median(image_tensors[:, :, :, start_idx:end_idx], dim=3).values
+                group_median = torch.median(
+                    image_tensors[:, :, :, start_idx:end_idx], dim=3
+                ).values
                 horizontally_transformed.append(group_median.unsqueeze(3))
             horizontally_transformed = torch.cat(horizontally_transformed, dim=3)
-        elif self.horizontal_kernel_function == 'MAX':
+        elif self.horizontal_kernel_function == "MAX":
             reshaped = image_tensors.reshape(b, c, h2, w // self.horizontal_kernel_size)
             horizontally_transformed = reshaped.max(dim=3)  # Shape: [1, 1, 20000, 1000]
         else:
-            raise Exception(f'Kernel function {self.horizontal_kernel_function} not implemented')
+            raise Exception(
+                f"Kernel function {self.horizontal_kernel_function} not implemented"
+            )
         image_tensors = horizontally_transformed
 
         if self.verbose:
-            print(f'(4.2)\tTRANSFORM: Horizontal transformation with kernel size {self.horizontal_kernel_size} and function '
-                  f'{self.horizontal_kernel_function} resulted in tensor of shape: {image_tensors.shape}')
+            print(
+                f"(4.2)\tTRANSFORM: Horizontal transformation with kernel size {self.horizontal_kernel_size} and function "
+                f"{self.horizontal_kernel_function} resulted in tensor of shape: {image_tensors.shape}"
+            )
 
         # TODO: implement avg_pool2d
 
@@ -274,7 +356,9 @@ class AutoVarve(object):
         changes = image_samples[:, :, 1:, :] - image_samples[:, :, :-1, :]
         print(changes)
         if self.verbose:
-            print(f'\n(4.1)\tComputing derivative resulted in a tensor of shape {changes.shape}')
+            print(
+                f"\n(4.1)\tComputing derivative resulted in a tensor of shape {changes.shape}"
+            )
         return changes
 
     def varve_counts_by_color_threshold(self, sample_changes, threshold):
@@ -298,9 +382,11 @@ class AutoVarve(object):
 
         if threshold is None:
             threshold = 0.05
-        varve_counts = self.varve_counts_by_color_threshold(sample_changes, threshold=threshold).squeeze()
+        varve_counts = self.varve_counts_by_color_threshold(
+            sample_changes, threshold=threshold
+        ).squeeze()
         if self.verbose:
-            print(f'Columnwise counts above {threshold} threshold: {varve_counts}')
+            print(f"Columnwise counts above {threshold} threshold: {varve_counts}")
         return varve_counts
 
     def plot_counts_histogram(self, varve_counts):
@@ -312,10 +398,11 @@ class AutoVarve(object):
         pass
 
 
-if __name__ == '__main__':
-    config_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'example_configs', 'example_config.json')
+if __name__ == "__main__":
+    config_file = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "example_configs",
+        "example_config.json",
+    )
     av = AutoVarve(config_file=config_file)
     av.execute()
-
-
-

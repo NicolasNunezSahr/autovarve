@@ -15,7 +15,7 @@
     },
     "vertical": {
       "size": 8,
-      "function":"MEDIAN"
+      "function": "MEDIAN"
     }
   },
   "pixel_change_threshold": 0.055
