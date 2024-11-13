@@ -18,5 +18,5 @@
       "function": "MEDIAN"
     }
   },
-  "pixel_change_threshold": 0.055
+  "pixel_change_threshold": 0.04
 }

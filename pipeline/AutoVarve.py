@@ -11,6 +11,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
+from datetime import datetime
 from matplotlib.colors import LinearSegmentedColormap
 from pathlib import Path
 import django
@@ -32,7 +33,9 @@ class AutoVarve(object):
             self,
             config_file,
             image_directory=None,
+            save_to_db=False
     ):
+        self.save_to_db = save_to_db
         self.config_file = self.load_config_file(config_file)
 
         # Define verbosity
@@ -124,18 +127,21 @@ class AutoVarve(object):
             self.pixel_change_threshold = 0.05  # Default
 
         # Create Django PipeRun object
-        piperun_object = PipeRun.objects.create(mode=self.mode,
-                                                scale_pixel_value_max=self.scale_pixel_value_max,
-                                                crop_left=self.crop[0],
-                                                crop_right=self.crop[1],
-                                                crop_top=self.crop[2],
-                                                crop_bottom=self.crop[3],
-                                                kernel_size_horizontal=self.horizontal_kernel_size,
-                                                kernel_size_vertical=self.vertical_kernel_size,
-                                                kernel_function_horizontal=self.horizontal_kernel_function,
-                                                kernel_function_vertical=self.vertical_kernel_function,
-                                                pixel_change_threshold=self.pixel_change_threshold)
-        self.piperun_id = piperun_object.id
+        if save_to_db:
+            piperun_object = PipeRun.objects.create(mode=self.mode,
+                                                    scale_pixel_value_max=self.scale_pixel_value_max,
+                                                    crop_left=self.crop[0],
+                                                    crop_right=self.crop[1],
+                                                    crop_top=self.crop[2],
+                                                    crop_bottom=self.crop[3],
+                                                    kernel_size_horizontal=self.horizontal_kernel_size,
+                                                    kernel_size_vertical=self.vertical_kernel_size,
+                                                    kernel_function_horizontal=self.horizontal_kernel_function,
+                                                    kernel_function_vertical=self.vertical_kernel_function,
+                                                    pixel_change_threshold=self.pixel_change_threshold)
+            self.piperun_id = piperun_object.id
+        else:
+            self.piperun_id = None
 
     @staticmethod
     def load_config_file(config_file):
@@ -176,7 +182,8 @@ class AutoVarve(object):
         )
 
         # Save varve_counts
-        self.save_counts(varve_counts)
+        if self.save_to_db:
+            self.save_counts(varve_counts)
 
         # Plot histogram of counts
         self.plot_counts_histogram(varve_counts)
@@ -257,6 +264,39 @@ class AutoVarve(object):
             save_directory = os.path.join(
                 os.path.dirname(self.image_directory), "other"
             )
+
+    def save_tensors_to_txt(self, image_tensors, save_directory=None, save_filename=None):
+        """
+        Save tensors to a save directory
+        :param image_tensors:
+        :return:
+        """
+        if save_directory is None:
+            save_directory = os.path.join(
+                os.path.dirname(self.image_directory), "other"
+            )
+        if save_filename is None:
+            save_filename = f'tensor_to_txt_{datetime.now().strftime("%d%m%Y%H%M%S")}.txt'
+        output_path = os.path.join(save_directory, save_filename)
+
+        image_tensors = image_tensors.squeeze()
+
+        if len(image_tensors.shape) > 2:
+            if self.verbose:
+                print('Image tensor contains multiple images or multiple channels. Selecting first image and channel '
+                      'for saving to text.')
+            image_tensors = image_tensors[0, 0, :, :].squeeze()
+
+        bools = image_tensors.cpu().numpy()
+
+        # Save to file with row numbers
+        with open(output_path, "w") as f:
+            header = "Row_Group\t" + "\t".join([f"column_{i+1}" for i in range(bools.shape[1])]) + "\n"
+            f.write(header)  # Header
+            for i, bool_row in enumerate(bools):
+                f.write(f"{i}\t" + "\t".join([f"{bool_value}" for bool_value in bool_row]) + "\n")
+
+        print(f"Derivatives above threshold saved to: {output_path}")
 
     def save_counts(self, varve_counts):
         """
@@ -409,6 +449,11 @@ class AutoVarve(object):
         :return:
         """
         above_threshold = sample_changes > threshold
+
+        print(above_threshold)
+        # Save boolean array
+        self.save_tensors_to_txt(above_threshold, save_filename=f'above_threshold_{threshold}.txt')
+
         varve_counts = above_threshold.sum(dim=2, keepdim=True)
         return varve_counts
 
@@ -418,6 +463,7 @@ class AutoVarve(object):
         :param image_samples:
         :return:
         """
+        # First, compute the change in the pixel values
         sample_changes = self.compute_sample_derivative(image_samples)
 
         if threshold is None:
@@ -425,6 +471,7 @@ class AutoVarve(object):
         varve_counts = self.varve_counts_by_color_threshold(
             sample_changes, threshold=threshold
         ).squeeze()
+
         if self.verbose:
             print(f"Columnwise counts above {threshold} threshold: {varve_counts}")
         return varve_counts
@@ -444,5 +491,5 @@ if __name__ == "__main__":
         "example_configs",
         "example_config.json",
     )
-    av = AutoVarve(config_file=config_file)
+    av = AutoVarve(config_file=config_file, save_to_db=False)
     av.execute()
