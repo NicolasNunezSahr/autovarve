@@ -12,6 +12,16 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.colors import LinearSegmentedColormap
+from pathlib import Path
+import django
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.append(str(PROJECT_ROOT))
+
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'autovarve_project.settings')
+django.setup()
+
+from autovarve.models import PipeRun, CoreColumn
 
 ALLOWED_MODES = ["RGB", "GRAY"]
 ALLOWED_KERNEL_FUNCTIONS = ["MEAN", "MEDIAN", "MAX"]
@@ -19,18 +29,24 @@ ALLOWED_KERNEL_FUNCTIONS = ["MEAN", "MEDIAN", "MAX"]
 
 class AutoVarve(object):
     def __init__(
-        self,
-        config_file,
-        image_directory=None,
+            self,
+            config_file,
+            image_directory=None,
     ):
+        self.config_file = self.load_config_file(config_file)
+
+        # Define verbosity
+        if "verbose" in self.config_file:
+            self.verbose = int(self.config_file["verbose"])
+        else:
+            self.verbose = 0  # Default
+
         if image_directory is None:
             self.image_directory = os.path.join(
                 os.path.dirname(os.path.dirname(__file__)), "data", "images"
             )
         else:
             self.image_directory = image_directory
-
-        self.config_file = self.load_config_file(config_file)
 
         # Define mode
         if "mode" in self.config_file and self.config_file["mode"] in ALLOWED_MODES:
@@ -43,45 +59,37 @@ class AutoVarve(object):
                 )
             self.mode = "GRAY"  # Default
 
-        # Define verbosity
-        if "verbose" in self.config_file:
-            self.verbose = int(self.config_file["verbose"])
-        else:
-            self.verbose = 0  # Default
-
         # Preprocessing params
         if "scale_pixel_value_max" in self.config_file:
             self.scale_pixel_value_max = int(self.config_file["scale_pixel_value_max"])
         else:
             self.scale_pixel_value_max = None  # Do not scale
 
-        self.crop = [
-            0
-        ] * 4  # Default to no cropping (order: [left, right, top, bottom])
+        self.crop = [0] * 4  # Default to no cropping (order: [left, right, top, bottom])
         if "crop" in self.config_file:
             for i, direction in enumerate(["left", "right", "top", "bottom"]):
                 if direction in self.config_file["crop"]:
                     self.crop[i] = int(self.config_file["crop"][direction])
 
         if (
-            "kernel_config" in self.config_file
-            and all(
-                [
-                    side in self.config_file["kernel_config"]
-                    for side in ["horizontal", "vertical"]
-                ]
-            )
-            and all(
-                [
-                    all(
-                        [
-                            key in self.config_file["kernel_config"][side]
-                            for side in ["horizontal", "vertical"]
-                        ]
-                    )
-                    for key in ["size", "function"]
-                ]
-            )
+                "kernel_config" in self.config_file
+                and all(
+            [
+                side in self.config_file["kernel_config"]
+                for side in ["horizontal", "vertical"]
+            ]
+        )
+                and all(
+            [
+                all(
+                    [
+                        key in self.config_file["kernel_config"][side]
+                        for side in ["horizontal", "vertical"]
+                    ]
+                )
+                for key in ["size", "function"]
+            ]
+        )
         ):
             self.horizontal_kernel_size = int(
                 self.config_file["kernel_config"]["horizontal"]["size"]
@@ -91,11 +99,11 @@ class AutoVarve(object):
             )
 
             if all(
-                [
-                    self.config_file["kernel_config"][side]["function"]
-                    in ALLOWED_KERNEL_FUNCTIONS
-                    for side in ["vertical", "horizontal"]
-                ]
+                    [
+                        self.config_file["kernel_config"][side]["function"]
+                        in ALLOWED_KERNEL_FUNCTIONS
+                        for side in ["vertical", "horizontal"]
+                    ]
             ):
                 self.horizontal_kernel_function = self.config_file["kernel_config"][
                     "horizontal"
@@ -114,6 +122,20 @@ class AutoVarve(object):
             self.pixel_change_threshold = self.config_file["pixel_change_threshold"]
         else:
             self.pixel_change_threshold = 0.05  # Default
+
+        # Create Django PipeRun object
+        piperun_object = PipeRun.objects.create(mode=self.mode,
+                                                scale_pixel_value_max=self.scale_pixel_value_max,
+                                                crop_left=self.crop[0],
+                                                crop_right=self.crop[1],
+                                                crop_top=self.crop[2],
+                                                crop_bottom=self.crop[3],
+                                                kernel_size_horizontal=self.horizontal_kernel_size,
+                                                kernel_size_vertical=self.vertical_kernel_size,
+                                                kernel_function_horizontal=self.horizontal_kernel_function,
+                                                kernel_function_vertical=self.vertical_kernel_function,
+                                                pixel_change_threshold=self.pixel_change_threshold)
+        self.piperun_id = piperun_object.id
 
     @staticmethod
     def load_config_file(config_file):
@@ -152,7 +174,7 @@ class AutoVarve(object):
         varve_counts = self.generate_varve_counts(
             image_samples=image_samples, threshold=threshold
         )
-        sys.exit()
+
         # Save varve_counts
         self.save_counts(varve_counts)
 
@@ -201,7 +223,7 @@ class AutoVarve(object):
                 image_tensors.max()
             )  # Get current max value, assuming it shows up in the image
             image_tensors = image_tensors.float() * (
-                self.scale_pixel_value_max / max_value
+                    self.scale_pixel_value_max / max_value
             )
             if self.verbose:
                 print(
@@ -214,8 +236,8 @@ class AutoVarve(object):
 
         # Crop images on the left, right, top and bottom
         image_tensors = image_tensors[
-            :, :, self.crop[2] : -self.crop[3], self.crop[0] : -self.crop[1]
-        ]
+                        :, :, self.crop[2]: -self.crop[3], self.crop[0]: -self.crop[1]
+                        ]
         if self.verbose:
             print(
                 f"(2.2)\tPREPROCESSING: Cropped image so that current shape is {image_tensors.shape}"
@@ -236,16 +258,34 @@ class AutoVarve(object):
                 os.path.dirname(self.image_directory), "other"
             )
 
-    def save_counts(self, varve_counts, save_directory=None):
+    def save_counts(self, varve_counts):
         """
-        Save tensors to a save directory
-        :param image_tensors:
+        Save varve counts to SQLite db
+        :param varve_counts:
         :return:
         """
-        if save_directory is None:
-            save_directory = os.path.join(
-                os.path.dirname(self.image_directory), "other"
-            )
+        new_corecolumn_created = 0
+        all_columns = len(varve_counts)
+        for i, varve_count in enumerate(varve_counts):
+            column_order = i + 1
+            column_width = self.horizontal_kernel_size
+
+            # If we crop the first 10 pixels, the first column starts at 10 + 1 = 11
+            pixel_start = self.crop[0] + (i * self.horizontal_kernel_size) + 1
+
+            # If we crop the first 10 pixels, and the width is 10, the first column ends at 10 + 10 = 20
+            pixel_end = self.crop[0] + (i + 1) * self.horizontal_kernel_size
+
+            corecolumn_object, created = CoreColumn.objects.get_or_create(pipe_run_id=self.piperun_id,
+                                                           column_order=column_order,
+                                                           column_width=column_width,
+                                                           pixel_start=pixel_start,
+                                                           pixel_end=pixel_end,
+                                                           varve_count=varve_count)
+            if created:
+                new_corecolumn_created += 1
+        print(f'Created {new_corecolumn_created}/{all_columns} new CoreColumn objects')
+
 
     def transform_images(self, image_tensors):
         """
@@ -270,7 +310,7 @@ class AutoVarve(object):
         elif self.vertical_kernel_function == "MEDIAN":
             vertically_transformed = []
             for i in range(
-                h // self.vertical_kernel_size
+                    h // self.vertical_kernel_size
             ):  # h // self.vertical_kernel_size groups
                 start_idx = i * self.vertical_kernel_size
                 end_idx = (i + 1) * self.vertical_kernel_size
@@ -306,7 +346,7 @@ class AutoVarve(object):
         elif self.horizontal_kernel_function == "MEDIAN":
             horizontally_transformed = []
             for i in range(
-                w // self.horizontal_kernel_size
+                    w // self.horizontal_kernel_size
             ):  # w // self.horizontal_kernel_size groups
                 start_idx = i * self.horizontal_kernel_size
                 end_idx = (i + 1) * self.horizontal_kernel_size
