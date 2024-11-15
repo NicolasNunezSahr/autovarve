@@ -11,10 +11,10 @@
   "kernel_config": {
     "horizontal": {
       "size": 65,
-      "function": "MEAN"
+      "function": "MEDIAN"
     },
     "vertical": {
-      "size": 8,
+      "size": 3,
       "function": "MEDIAN"
     }
   },

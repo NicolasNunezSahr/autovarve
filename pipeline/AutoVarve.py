@@ -454,6 +454,8 @@ class AutoVarve(object):
         # Save boolean array
         self.save_tensors_to_txt(above_threshold, save_filename=f'above_threshold_{threshold}.txt')
 
+        # Compute cross-correlation with neighbors
+
         varve_counts = above_threshold.sum(dim=2, keepdim=True)
         return varve_counts
 
@@ -465,6 +467,17 @@ class AutoVarve(object):
         """
         # First, compute the change in the pixel values
         sample_changes = self.compute_sample_derivative(image_samples)
+
+        sample_change_deciles = self.quantize_to_deciles(sample_changes)
+        # self.save_tensors_to_txt(sample_change_deciles, save_filename='decile_changes.txt')
+
+        # Compute cross-correlation of columns
+        for column_num in range(sample_change_deciles.shape[3] - 1):
+            lags, correlations = self.compute_column_cross_correlation(tensor=sample_change_deciles,
+                                                                       col1_idx=column_num,
+                                                                       col2_idx=column_num + 1,
+                                                                       max_lag=10)
+            self.plot_cross_correlation(lags, correlations)
 
         if threshold is None:
             threshold = 0.05
@@ -483,6 +496,100 @@ class AutoVarve(object):
         :return:
         """
         pass
+
+    def quantize_to_deciles(self, tensor):
+        """
+        Convert tensor values to decile buckets (1-10).
+
+        Args:
+            tensor (torch.Tensor): Input tensor of shape [batch, channels, height, width]
+
+        Returns:
+            torch.Tensor: Tensor of same shape with values replaced by their decile bucket numbers (1-10)
+        """
+        # Create output tensor of same shape
+        quantized = torch.zeros_like(tensor)
+
+        # Get the dimensions
+        batch, channels, height, width = tensor.shape
+
+        # Process each batch and channel separately
+        for b in range(batch):
+            for c in range(channels):
+                # Get the 2D slice
+                data = tensor[b, c]
+
+                # Calculate decile boundaries (0 to 100 by 10)
+                deciles = torch.tensor(
+                    np.percentile(data.numpy(), np.arange(0, 101, 10))
+                )
+
+                # Assign bucket numbers (1-10) based on which decile range the value falls into
+                for i in range(10):
+                    if i == 0:
+                        mask = data <= deciles[i + 1]
+                    elif i == 9:
+                        mask = data > deciles[i]
+                    else:
+                        mask = (data > deciles[i]) & (data <= deciles[i + 1])
+
+                    quantized[b, c][mask] = i + 1
+
+        return quantized
+
+    def compute_column_cross_correlation(self, tensor, col1_idx=0, col2_idx=1, max_lag=None):
+        """
+        Compute cross-correlation between two columns of a tensor at different lags.
+
+        Args:
+            tensor (torch.Tensor): Input tensor of shape [1, 1, height, width]
+            col1_idx (int): Index of first column (default: 0)
+            col2_idx (int): Index of second column (default: 1)
+            max_lag (int): Maximum lag to compute (default: None, uses full length)
+
+        Returns:
+            lags (numpy.ndarray): Array of lag values
+            correlations (numpy.ndarray): Cross-correlation values for each lag
+        """
+        # Extract the columns (removing batch and channel dimensions)
+        col1 = tensor[0, 0, :, col1_idx].numpy()
+        col2 = tensor[0, 0, :, col2_idx].numpy()
+
+        # Standardize the columns (subtract mean and divide by std)
+        col1_std = (col1 - np.mean(col1)) / np.std(col1)
+        col2_std = (col2 - np.mean(col2)) / np.std(col2)
+
+        # Compute cross-correlation
+        correlations = np.correlate(col1_std, col2_std, mode='full')
+
+        # Calculate lags
+        n = len(col1)
+        lags = np.arange(-(n - 1), n)
+
+        # If max_lag is specified, truncate the results
+        if max_lag is not None:
+            mask = np.abs(lags) <= max_lag
+            lags = lags[mask]
+            correlations = correlations[mask]
+            print(f'Correlations between col {col1_idx} and {col2_idx}: {correlations}\n')
+
+        return lags, correlations
+
+    def plot_cross_correlation(self, lags, correlations):
+        """
+        Plot the cross-correlation results.
+        """
+        import matplotlib.pyplot as plt
+
+        plt.figure(figsize=(10, 6))
+        plt.plot(lags, correlations)
+        plt.axvline(x=0, color='r', linestyle='--', alpha=0.5)
+        plt.axhline(y=0, color='r', linestyle='--', alpha=0.5)
+        plt.grid(True)
+        plt.xlabel('Lag')
+        plt.ylabel('Cross-correlation')
+        plt.title('Cross-correlation between columns')
+        plt.show()
 
 
 if __name__ == "__main__":
