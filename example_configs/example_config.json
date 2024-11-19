@@ -21,5 +21,6 @@
   "pixel_change_threshold": 0.04,
   "correlation_group_size": 1000,
   "vertical_or_aggregation_size": 3,
-  "column_fraction_threshold": 0.35
+  "column_fraction_threshold": 0.35,
+  "save_directory": "data/labeled_images"
 }

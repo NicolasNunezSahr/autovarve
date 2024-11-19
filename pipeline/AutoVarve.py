@@ -172,6 +172,18 @@ class AutoVarve(object):
         else:
             self.human_labels_df = None
 
+        if "save_directory" in self.config_file:
+            self.save_directory = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                self.config_file['save_directory']
+            )
+        else:
+            self.save_directory = os.path.join(
+                os.path.dirname(os.path.dirname(__file__)),
+                "data",
+                "labeled_images"
+            )
+
     @staticmethod
     def load_config_file(config_file):
         """
@@ -202,7 +214,7 @@ class AutoVarve(object):
 
         # Maybe loop over this section to compute a histogram for each threshold value
         # Count varves
-        varve_counts = self.generate_varve_counts(
+        varve_counts, varve_pixel_heights = self.generate_varve_counts(
             image_samples=image_tensors, threshold=self.pixel_change_threshold
         )
 
@@ -212,6 +224,8 @@ class AutoVarve(object):
 
         # Plot histogram of counts
         self.plot_counts_histogram(varve_counts)
+
+        self.modify_image(varve_pixel_heights)
 
     def load_images(self):
         """
@@ -239,6 +253,56 @@ class AutoVarve(object):
                 f"(1.1)\tUPLOADING: Loaded tensor of shape: {all_image_tensors.shape}"
             )
         return all_image_tensors
+
+    def modify_image(self, height_coordinates, line_thickness=10):
+        """
+        Draw horizontal lines on a grayscale image at specified height coordinates.
+
+        Args:
+            image_tensor (torch.Tensor): Input image tensor of shape [1, 1, H, W]
+            height_coordinates (list): List of height coordinates where lines should be drawn
+            line_thickness (int): Thickness of the lines in pixels
+            save_dir (str, optional): Directory to save the modified image. If None, saves in current directory
+
+        Returns:
+            torch.Tensor: Modified image tensor
+        """
+        image_tensor = self.load_images()
+        # Create a copy of the input tensor to avoid modifying the original
+        modified_tensor = image_tensor.clone()
+
+        # Get image dimensions
+        _, _, height, width = modified_tensor.shape
+
+        # Validate height coordinates
+        height_coordinates = [h for h in height_coordinates if 0 <= h < height]
+
+        # Draw horizontal lines
+        for h in height_coordinates:
+            # Calculate the range for line thickness
+            start_h = max(0, h - line_thickness // 2)
+            end_h = min(height, h + line_thickness // 2)
+
+            # Set pixel values to white (1.0) for the line
+            modified_tensor[0, 0, start_h:end_h, :] = 1.0
+
+        # Ensure save directory exists
+        os.makedirs(self.save_directory, exist_ok=True)
+
+        # Convert tensor to PIL Image and save
+        # Assuming values are in range [0, 1]
+        image_pil = T.functional.to_pil_image(modified_tensor[0])
+
+        # Generate save path
+        base_name = 'image'  # Default name if original name not provided
+        save_path = os.path.join(self.save_directory, f'{base_name}_modified.png')
+
+        # Save the image
+        image_pil.save(save_path)
+
+        return modified_tensor
+
+
 
     def set_image_shape(self, shape):
         self.image_shape = shape
@@ -488,11 +552,13 @@ class AutoVarve(object):
         save_filename = f'{save_basename}.txt'
         self.save_tensors_to_txt(above_threshold, save_filename=save_filename)
         if group_cols:
-            varve_counts = self.count_horizontal_lines(tensor=above_threshold, group=group)
+            varve_counts, true_indices = self.count_horizontal_lines(tensor=above_threshold, group=group)
             varve_counts = torch.tensor(varve_counts)
         else:
             varve_counts = above_threshold.sum(dim=2, keepdim=True)
-        return varve_counts
+            true_indices = torch.where(above_threshold[0, 0])
+            true_indices = list(zip(true_indices[0].tolist(), true_indices[1].tolist()))
+        return varve_counts, true_indices
 
     def count_horizontal_lines(self, tensor, group=None):
         # First, blur 3 rows together to increase collision probability
@@ -517,14 +583,15 @@ class AutoVarve(object):
             print(f'Blurring resulted in tensor of shape {result.shape}')
 
         result = self.majority_vote_rows(result, threshold=math.ceil(result.shape[3] / 3), group=group)
+        true_indices = [i for i, value in enumerate(result.squeeze().tolist()) if value is True]
 
         if self.verbose:
-            print(f'Majority vote led to a tensor of shape {result.shape}: '
-                  f'\n{[f"{i} {value}" for i, value in enumerate(result.squeeze().tolist()) if value is True]}')
+            print(f'Majority vote led to a tensor of shape {result.shape} with true indices: '
+                  f'\n{true_indices}')
 
-        varve_counts = result.sum(dim=2, keepdim=True)
+        varve_count = result.sum(dim=2, keepdim=True)
 
-        return varve_counts
+        return varve_count, true_indices
 
     def majority_vote_rows(self, tensor, threshold=8, group=None):
         """
@@ -601,8 +668,9 @@ class AutoVarve(object):
         group_size = math.ceil(self.correlation_group_pixel_height / self.vertical_kernel_size)  # Compute correlations at intervals of 1000 pixels
         num_groups = int((sample_changes.shape[2] // group_size) + 1)
         cumulative_varve_counts_per_col = [0] * sample_changes.shape[3]
-        group_cols = True  # Whether to group columns or to have independent counts
+        group_cols = True  # Whether to group columns or to have independent counts. Must be set to True
         varve_count = 0
+        varve_pixel_heights = []
         for i in range(num_groups):
             start_idx = i * group_size
             if i + 1 == num_groups:  # last group
@@ -650,13 +718,15 @@ class AutoVarve(object):
                     # print(f'Start idx: {start_idx}; end_idx = {end_idx}; '
                     #       f'change values: {sample_change_horizontal_group[:, :, up_shift:, r2l_idx].shape}')
 
-            varve_counts_in_group = self.varve_counts_by_color_threshold(
+            varve_counts_in_group, true_indices = self.varve_counts_by_color_threshold(
                 shifted_sample_change_group, threshold=threshold, group=i, group_cols=True
-            ).squeeze()
+            )
+            varve_counts_in_group = varve_counts_in_group.squeeze()
             if self.verbose:
                 print(f'Varve counts in group {i}: {varve_counts_in_group}')
             if group_cols:
                 varve_count += float(varve_counts_in_group.item())
+                varve_pixel_heights.extend(self.get_varve_pixel_heights(group_num=i, indices=true_indices))
             else:
                 for ii in range(len(cumulative_varve_counts_per_col)):
                     cumulative_varve_counts_per_col[ii] += varve_counts_in_group[ii]
@@ -665,7 +735,7 @@ class AutoVarve(object):
             print(f"Columnwise counts above {threshold} threshold: {varve_count}")
         if group_cols:
             varve_count = [varve_count]
-        return varve_count
+        return varve_count, varve_pixel_heights
 
     def plot_counts_histogram(self, varve_counts):
         """
@@ -799,6 +869,7 @@ class AutoVarve(object):
                 col2_shifted = col2
 
             # Compute Pearson correlation
+            # TODO: alternatively use signal-processing cross-correlation
             if len(col1_shifted) > 1:  # Need at least 2 points for correlation
                 # Convert to float and subtract mean
                 x = col1_shifted.float() - col1_shifted.float().mean()
@@ -852,6 +923,14 @@ class AutoVarve(object):
         #     new_w = math.floor((w - self.crop['left']) / self.horizontal_kernel_size)
 
         return group_num, index_in_group
+
+    def get_varve_pixel_heights(self, group_num, indices):
+        pixel_heights = []
+        for true_index in indices:
+            pixel_height = (group_num * self.correlation_group_pixel_height +
+                   self.vertical_kernel_size * self.vertical_or_aggregation_size * true_index) + self.crop['top']
+            pixel_heights.append(pixel_height)
+        return pixel_heights
 
 
 if __name__ == "__main__":
