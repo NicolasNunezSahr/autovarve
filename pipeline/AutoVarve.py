@@ -11,6 +11,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 import numpy as np
+import math
 from datetime import datetime
 from matplotlib.colors import LinearSegmentedColormap
 from pathlib import Path
@@ -26,6 +27,7 @@ from autovarve.models import PipeRun, CoreColumn
 
 ALLOWED_MODES = ["RGB", "GRAY"]
 ALLOWED_KERNEL_FUNCTIONS = ["MEAN", "MEDIAN", "MAX"]
+MAX_VARVE_THICKNESS = 20
 
 
 class AutoVarve(object):
@@ -33,8 +35,10 @@ class AutoVarve(object):
             self,
             config_file,
             image_directory=None,
-            save_to_db=False
+            save_to_db=False,
+            human_labels_csv=None
     ):
+        self.image_shape = (1, 65776, 4000)  # Defined inside self.set_image_shape()
         self.save_to_db = save_to_db
         self.config_file = self.load_config_file(config_file)
 
@@ -68,11 +72,11 @@ class AutoVarve(object):
         else:
             self.scale_pixel_value_max = None  # Do not scale
 
-        self.crop = [0] * 4  # Default to no cropping (order: [left, right, top, bottom])
+        self.crop = {'left': 0, 'right': 0, 'top': 0, 'bottom': 0}  # Default to no cropping
         if "crop" in self.config_file:
             for i, direction in enumerate(["left", "right", "top", "bottom"]):
                 if direction in self.config_file["crop"]:
-                    self.crop[i] = int(self.config_file["crop"][direction])
+                    self.crop[direction] = int(self.config_file["crop"][direction])
 
         if (
                 "kernel_config" in self.config_file
@@ -126,22 +130,47 @@ class AutoVarve(object):
         else:
             self.pixel_change_threshold = 0.05  # Default
 
+        if "correlation_group_size" in self.config_file:
+            self.correlation_group_pixel_height = self.config_file['correlation_group_size']
+        else:
+            self.correlation_group_pixel_height = 1000  # Default
+
+        if "vertical_or_aggregation_size" in self.config_file:
+            self.vertical_or_aggregation_size = self.config_file['vertical_or_aggregation_size']
+        else:
+            self.vertical_or_aggregation_size = 3
+
+        if "column_fraction_threshold" in self.config_file:
+            self.column_fraction_threshold = self.config_file['column_fraction_threshold']
+        else:
+            self.column_fraction_threshold = 0.35
+
         # Create Django PipeRun object
         if save_to_db:
             piperun_object = PipeRun.objects.create(mode=self.mode,
                                                     scale_pixel_value_max=self.scale_pixel_value_max,
-                                                    crop_left=self.crop[0],
-                                                    crop_right=self.crop[1],
-                                                    crop_top=self.crop[2],
-                                                    crop_bottom=self.crop[3],
+                                                    crop_left=self.crop['left'],
+                                                    crop_right=self.crop['right'],
+                                                    crop_top=self.crop['top'],
+                                                    crop_bottom=self.crop['bottom'],
                                                     kernel_size_horizontal=self.horizontal_kernel_size,
                                                     kernel_size_vertical=self.vertical_kernel_size,
                                                     kernel_function_horizontal=self.horizontal_kernel_function,
                                                     kernel_function_vertical=self.vertical_kernel_function,
-                                                    pixel_change_threshold=self.pixel_change_threshold)
+                                                    pixel_change_threshold=self.pixel_change_threshold,
+                                                    vertical_or_aggregation_size=self.vertical_or_aggregation_size,
+                                                    column_fraction_threshold=self.column_fraction_threshold)
             self.piperun_id = piperun_object.id
         else:
             self.piperun_id = None
+
+        if human_labels_csv is not None:
+            self.human_labels_df = pd.read_csv(human_labels_csv)
+            if self.verbose:
+                print(f'Loaded {self.human_labels_df.shape[0]} human-labeled varves')
+            self.transform_human_labels()
+        else:
+            self.human_labels_df = None
 
     @staticmethod
     def load_config_file(config_file):
@@ -171,14 +200,10 @@ class AutoVarve(object):
         # Transform images
         image_tensors = self.transform_images(image_tensors)
 
-        # Split image column-wise te generate distinct samples from within the core
-        image_samples = self.generate_samples(image_tensors)
-
         # Maybe loop over this section to compute a histogram for each threshold value
         # Count varves
-        threshold = self.pixel_change_threshold
         varve_counts = self.generate_varve_counts(
-            image_samples=image_samples, threshold=threshold
+            image_samples=image_tensors, threshold=self.pixel_change_threshold
         )
 
         # Save varve_counts
@@ -201,6 +226,7 @@ class AutoVarve(object):
             if i == 0:
                 # Read first image to get dimensions
                 c, h, w = single_image_tensor.shape
+                self.set_image_shape(shape=single_image_tensor.shape)
                 # Initialize tensor to store all images
                 batch_size = len(os.listdir(self.image_directory))
                 all_image_tensors = torch.zeros(
@@ -213,6 +239,9 @@ class AutoVarve(object):
                 f"(1.1)\tUPLOADING: Loaded tensor of shape: {all_image_tensors.shape}"
             )
         return all_image_tensors
+
+    def set_image_shape(self, shape):
+        self.image_shape = shape
 
     def preprocess_images(self, image_tensors):
         """
@@ -243,7 +272,7 @@ class AutoVarve(object):
 
         # Crop images on the left, right, top and bottom
         image_tensors = image_tensors[
-                        :, :, self.crop[2]: -self.crop[3], self.crop[0]: -self.crop[1]
+                        :, :, self.crop['top']: -self.crop['bottom'], self.crop['left']: -self.crop['right']
                         ]
         if self.verbose:
             print(
@@ -311,10 +340,10 @@ class AutoVarve(object):
             column_width = self.horizontal_kernel_size
 
             # If we crop the first 10 pixels, the first column starts at 10 + 1 = 11
-            pixel_start = self.crop[0] + (i * self.horizontal_kernel_size) + 1
+            pixel_start = self.crop['left'] + (i * self.horizontal_kernel_size) + 1
 
             # If we crop the first 10 pixels, and the width is 10, the first column ends at 10 + 10 = 20
-            pixel_end = self.crop[0] + (i + 1) * self.horizontal_kernel_size
+            pixel_end = self.crop['left'] + (i + 1) * self.horizontal_kernel_size
 
             corecolumn_object, created = CoreColumn.objects.get_or_create(pipe_run_id=self.piperun_id,
                                                            column_order=column_order,
@@ -406,7 +435,7 @@ class AutoVarve(object):
 
         if self.verbose:
             print(
-                f"(4.2)\tTRANSFORM: Horizontal transformation with kernel size {self.horizontal_kernel_size} and function "
+                f"(3.2)\tTRANSFORM: Horizontal transformation with kernel size {self.horizontal_kernel_size} and function "
                 f"{self.horizontal_kernel_function} resulted in tensor of shape: {image_tensors.shape}"
             )
 
@@ -434,14 +463,13 @@ class AutoVarve(object):
         :return:
         """
         changes = image_samples[:, :, 1:, :] - image_samples[:, :, :-1, :]
-        print(changes)
         if self.verbose:
             print(
                 f"\n(4.1)\tComputing derivative resulted in a tensor of shape {changes.shape}"
             )
         return changes
 
-    def varve_counts_by_color_threshold(self, sample_changes, threshold):
+    def varve_counts_by_color_threshold(self, sample_changes, threshold, group=None, l2r_idx=None, group_cols=True):
         """
         Compute the number of times each sample goes above the threshold.
         :param sample_changes:
@@ -450,16 +478,92 @@ class AutoVarve(object):
         """
         above_threshold = sample_changes > threshold
 
-        print(above_threshold)
+        # print(above_threshold)
         # Save boolean array
-        self.save_tensors_to_txt(above_threshold, save_filename=f'above_threshold_{threshold}.txt')
-
-        # Compute cross-correlation with neighbors
-
-        varve_counts = above_threshold.sum(dim=2, keepdim=True)
+        save_basename = f'above_threshold_{threshold}'
+        if group is not None:
+            save_basename = f'{save_basename}_g{group}'
+        if l2r_idx is not None:
+            save_basename = f'{save_basename}_i{l2r_idx}'
+        save_filename = f'{save_basename}.txt'
+        self.save_tensors_to_txt(above_threshold, save_filename=save_filename)
+        if group_cols:
+            varve_counts = self.count_horizontal_lines(tensor=above_threshold, group=group)
+            varve_counts = torch.tensor(varve_counts)
+        else:
+            varve_counts = above_threshold.sum(dim=2, keepdim=True)
         return varve_counts
 
-    def generate_varve_counts(self, image_samples, threshold):
+    def count_horizontal_lines(self, tensor, group=None):
+        # First, blur 3 rows together to increase collision probability
+        N = tensor.shape[2]
+        output_size = math.ceil(N / 3)
+
+        result = torch.zeros((1, 1, output_size, 15), dtype=torch.bool, device=tensor.device)
+
+        # Process complete groups of 3
+        complete_groups = N // 3
+        if complete_groups > 0:
+            main_part = tensor[:, :, :complete_groups * 3, :]
+            reshaped = main_part.reshape(1, 1, -1, 3, 15)
+            result[:, :, :complete_groups, :] = torch.any(reshaped, dim=3)
+
+        remaining = N % 3
+        if remaining > 0:
+            start_idx = complete_groups * 3
+            remaining_values = tensor[:, :, start_idx:, :]
+            result[:, :, -1, :] = torch.any(remaining_values, dim=2)
+        if self.verbose:
+            print(f'Blurring resulted in tensor of shape {result.shape}')
+
+        result = self.majority_vote_rows(result, threshold=math.ceil(result.shape[3] / 3), group=group)
+
+        if self.verbose:
+            print(f'Majority vote led to a tensor of shape {result.shape}: '
+                  f'\n{[f"{i} {value}" for i, value in enumerate(result.squeeze().tolist()) if value is True]}')
+
+        varve_counts = result.sum(dim=2, keepdim=True)
+
+        return varve_counts
+
+    def majority_vote_rows(self, tensor, threshold=8, group=None):
+        """
+        For each row in the tensor, set it to True if the number of True values
+        in that row exceeds the threshold.
+
+        Args:
+            tensor (torch.Tensor): Input tensor of shape [1, 1, 33, 15]
+            threshold (int, optional): Minimum number of True values needed. Defaults to 8.
+
+        Returns:
+            torch.Tensor: Output tensor of shape [1, 1, 33, 1] where each value represents
+                         the majority vote for that row
+        """
+        # Input validation
+        if not isinstance(tensor, torch.Tensor):
+            raise TypeError("Input must be a PyTorch tensor")
+
+        if len(tensor.shape) != 4:
+            raise ValueError(f"Expected 4D tensor, got shape {tensor.shape}")
+
+        if tensor.shape[3] != 15:
+            raise ValueError(f"Expected 15 columns, got {tensor.shape[3]}")
+
+        if tensor.dtype != torch.bool:
+            raise TypeError("Input tensor must contain boolean values")
+
+        # Count True values along the last dimension (columns)
+        true_counts = torch.sum(tensor, dim=3)  # Shape: [1, 1, 33]
+
+        # Compare with threshold
+        result = (true_counts >= threshold)  # Shape: [1, 1, 33]
+
+        # Add the final dimension to match desired output shape
+        result = result.unsqueeze(-1)  # Shape: [1, 1, 33, 1]
+
+        return result
+
+    def generate_varve_counts(self, image_samples, threshold=None):
         """
         For each sample, where each sample is a column, compute the change in the color of the pixels vertically.
         :param image_samples:
@@ -468,26 +572,100 @@ class AutoVarve(object):
         # First, compute the change in the pixel values
         sample_changes = self.compute_sample_derivative(image_samples)
 
-        sample_change_deciles = self.quantize_to_deciles(sample_changes)
+        if threshold is None:
+            threshold = 0.05
+
+        # sample_change_deciles = self.quantize_to_deciles(sample_changes)
         # self.save_tensors_to_txt(sample_change_deciles, save_filename='decile_changes.txt')
 
         # Compute cross-correlation of columns
-        for column_num in range(sample_change_deciles.shape[3] - 1):
-            lags, correlations = self.compute_column_cross_correlation(tensor=sample_change_deciles,
-                                                                       col1_idx=column_num,
-                                                                       col2_idx=column_num + 1,
-                                                                       max_lag=10)
-            self.plot_cross_correlation(lags, correlations)
+        # The maximum curvature of a varve line tends to be around 0.5, or 45 degrees; the thickness of a varve line
+        # tends to be between 2 and 20 pixels. Hence, with raw pixels, we would want the max lag to be 20 + 1, so that
+        # the bottom pixel of the first column can be correlated with the top of the other, thereby enforcing
+        # continuity of the varve line. If the horizontal kernel size grows, then we want to shrink the max negative
+        # lag proportionally to enforce the continuity constraint. For now we ignore the horizontal kernel size.
+        left_column_max_upshift = math.ceil((MAX_VARVE_THICKNESS / self.vertical_kernel_size) + 1)
 
-        if threshold is None:
-            threshold = 0.05
-        varve_counts = self.varve_counts_by_color_threshold(
-            sample_changes, threshold=threshold
-        ).squeeze()
+        # On the positive end i.e. shifting left column downwards to match the right column, is rare. However, this
+        # could be because of our specific data sample. We set the max_downshift to the same, even though it would be
+        # wise to set this to a smaller value due to our prior that negative-sloped varves are rare.
+        left_column_max_downshift = math.ceil((MAX_VARVE_THICKNESS / self.vertical_kernel_size) + 1)
+
+        # The edge columns, i.e. column_num values that are close to 0 or close to the max, tend to have more
+        #  curvature due to the way sediment cores are extracted. Therefore, we could utilize this prior knowledge to
+        #  limit our max positive/negative lag.
+        #  Specifically, we could use a decreasing linear relationship between max negative lag and column_num:
+        #  y_0 = (MAX_VARVE_THICKNESS / self.vertical_kernel_size) + 1 [i.e. max lag when column_num = 0]
+        #  y_end = (MAX_VARVE_THICKNESS / 4 * self.vertical_kernel_size) + 1 [i.e. minimum possible max negative lag]
+        #  left_column_max_upshift = y_0 - column_num * ( (y_0 - y_end) / sample_changes.shape[3] )
+        group_size = math.ceil(self.correlation_group_pixel_height / self.vertical_kernel_size)  # Compute correlations at intervals of 1000 pixels
+        num_groups = int((sample_changes.shape[2] // group_size) + 1)
+        cumulative_varve_counts_per_col = [0] * sample_changes.shape[3]
+        group_cols = True  # Whether to group columns or to have independent counts
+        varve_count = 0
+        for i in range(num_groups):
+            start_idx = i * group_size
+            if i + 1 == num_groups:  # last group
+                end_idx = int(sample_changes.shape[2] - 1)  # last possible pixel
+            else:
+                end_idx = (i + 1) * group_size
+            group_size = end_idx - start_idx  # Last group is smaller
+
+            # Extract group
+            sample_change_horizontal_group = sample_changes[:, :, start_idx:end_idx, :]
+            print(f'Starting new group from index {start_idx} to {end_idx}, obtaining a tensor of shape {sample_change_horizontal_group.shape}')
+            optimal_lag_list = []
+            for column_num in range(sample_change_horizontal_group.shape[3] - 1):
+                lags, correlations = self.compute_column_cross_correlation(tensor=sample_change_horizontal_group,
+                                                                           col1_idx=column_num,
+                                                                           col2_idx=column_num + 1,
+                                                                           left_column_max_upshift=left_column_max_upshift,
+                                                                           left_column_max_downshift=left_column_max_downshift)
+                # self.plot_cross_correlation(lags=lags, correlations=correlations, col1_idx=column_num,
+                #                             col2_idx=column_num+1)
+                optimal_lag_idx = np.argmax(correlations)
+                optimal_lag = lags[optimal_lag_idx]
+                optimal_lag_list.append(optimal_lag)
+                max_correlation = correlations[optimal_lag_idx]
+                if self.verbose:
+                    print(f'Group {i}: Columns {column_num} <-> {column_num + 1}: Max correlation of '
+                          f'{max_correlation} achieved at a lag of {optimal_lag}')
+            # Shift columns according to optimal lag
+            shifted_sample_change_group = torch.zeros_like(sample_change_horizontal_group)  # Set all to 0 pixel change
+            # Last column stays the same
+            cumulative_lag = 0
+            shifted_sample_change_group[:, :, :, -1] = sample_change_horizontal_group[:, :, :, -1]
+            for l2r_idx in range(len(optimal_lag_list)):  # shape[3] - 2 elements
+                r2l_idx = (len(optimal_lag_list) - 1) - l2r_idx
+                l_star = optimal_lag_list[r2l_idx]
+                cumulative_lag += l_star
+                # print(f'r to l idx: {r2l_idx}; l to r idx: {l2r_idx} optimal lag: {l_star}; cumulative_lag: {cumulative_lag}')
+                if cumulative_lag > 0:  # Need to shift down, so we lose data at the end
+                    shifted_sample_change_group[:, :, cumulative_lag:, r2l_idx] = sample_change_horizontal_group[:, :, :group_size-cumulative_lag, r2l_idx]
+                    # print(f'Start idx: {start_idx}; end_idx = {end_idx}; '
+                    #       f'change values: {sample_change_horizontal_group[:, :, :group_size-cumulative_lag, r2l_idx].shape}')
+                else:  # Need to shift up
+                    up_shift = np.abs(cumulative_lag)
+                    shifted_sample_change_group[:, :, :group_size - up_shift, r2l_idx] = sample_change_horizontal_group[:, :, up_shift:, r2l_idx]
+                    # print(f'Start idx: {start_idx}; end_idx = {end_idx}; '
+                    #       f'change values: {sample_change_horizontal_group[:, :, up_shift:, r2l_idx].shape}')
+
+            varve_counts_in_group = self.varve_counts_by_color_threshold(
+                shifted_sample_change_group, threshold=threshold, group=i, group_cols=True
+            ).squeeze()
+            if self.verbose:
+                print(f'Varve counts in group {i}: {varve_counts_in_group}')
+            if group_cols:
+                varve_count += float(varve_counts_in_group.item())
+            else:
+                for ii in range(len(cumulative_varve_counts_per_col)):
+                    cumulative_varve_counts_per_col[ii] += varve_counts_in_group[ii]
 
         if self.verbose:
-            print(f"Columnwise counts above {threshold} threshold: {varve_counts}")
-        return varve_counts
+            print(f"Columnwise counts above {threshold} threshold: {varve_count}")
+        if group_cols:
+            varve_count = [varve_count]
+        return varve_count
 
     def plot_counts_histogram(self, varve_counts):
         """
@@ -537,7 +715,7 @@ class AutoVarve(object):
 
         return quantized
 
-    def compute_column_cross_correlation(self, tensor, col1_idx=0, col2_idx=1, max_lag=None):
+    def compute_column_raw_cross_correlation(self, tensor, col1_idx=0, col2_idx=1, max_lag=None):
         """
         Compute cross-correlation between two columns of a tensor at different lags.
 
@@ -575,7 +753,66 @@ class AutoVarve(object):
 
         return lags, correlations
 
-    def plot_cross_correlation(self, lags, correlations):
+    def compute_column_cross_correlation(self, tensor, col1_idx=0, col2_idx=1, left_column_max_upshift=None,
+                                         left_column_max_downshift=None):
+        """
+        Compute cross-correlation between first and second columns of a tensor at various lags.
+
+        Args:
+            tensor: Tensor of shape [1, 1, height, width] representing grayscale images
+            left_column_max_upshift: Maximum lag to compute in negative direction.
+                    If None, will compute for all possible negative lags
+            left_column_max_downshift: Maximum lag to compute in positive direction.
+                    If None, will compute for all possible positive lags
+
+        Returns:
+            lags: Array of lag values
+            correlations: Array of correlation values for each lag
+        """
+        # Extract first two columns from the tensor
+        # Squeeze out batch and channel dimensions
+        col1 = tensor[0, 0, :, col1_idx]  # Shape: [100]
+        col2 = tensor[0, 0, :, col2_idx]  # Shape: [100]
+
+        # If max up/down shifts are not specified, compute for all possible lags
+        if left_column_max_upshift is None:
+            left_column_max_upshift = len(col1) - 1
+        if left_column_max_downshift is None:
+            left_column_max_downshift = len(col1) - 1
+
+        # Initialize arrays to store results
+        lags = range(-left_column_max_upshift, left_column_max_downshift + 1)
+        correlations = []
+
+        for lag in lags:
+            if lag < 0:
+                # Shift col1 up (or col2 down)
+                col1_shifted = col1[-lag:]
+                col2_shifted = col2[:len(col1_shifted)]
+            elif lag > 0:
+                # Shift col1 down (or col2 up)
+                col1_shifted = col1[:-lag]
+                col2_shifted = col2[lag:]
+            else:
+                # No shift
+                col1_shifted = col1
+                col2_shifted = col2
+
+            # Compute Pearson correlation
+            if len(col1_shifted) > 1:  # Need at least 2 points for correlation
+                # Convert to float and subtract mean
+                x = col1_shifted.float() - col1_shifted.float().mean()
+                y = col2_shifted.float() - col2_shifted.float().mean()
+
+                # Compute correlation coefficient
+                r = (x * y).sum() / (torch.sqrt((x ** 2).sum()) * torch.sqrt((y ** 2).sum()))
+                correlations.append(r.item())
+            else:
+                correlations.append(0.0)
+
+        return np.array(lags), np.array(correlations)
+
+    def plot_cross_correlation(self, lags, correlations, col1_idx=None, col2_idx=None):
         """
         Plot the cross-correlation results.
         """
@@ -588,8 +825,33 @@ class AutoVarve(object):
         plt.grid(True)
         plt.xlabel('Lag')
         plt.ylabel('Cross-correlation')
-        plt.title('Cross-correlation between columns')
+        if all([col is not None for col in [col1_idx, col2_idx]]):
+            plt.title(f'Cross-correlation between columns {col1_idx} and {col2_idx}')
+        else:
+            plt.title('Cross-correlation between columns')
         plt.show()
+
+    def transform_human_labels(self):
+        for index, row in self.human_labels_df.iterrows():
+            group_num, index_in_group = self.pixel_location_to_group_index(h=row['start_pixel_row'], w=row['pixel_col'])
+            print(f'Human labeled varve found in Group {group_num} in index {index_in_group}')
+
+    def pixel_location_to_group_index(self, h, w):
+        if h < self.crop['top'] or h > self.image_shape[1] - self.crop['bottom']:
+            new_h = None  # Cropped out
+            group_num = None
+            index_in_group = None
+        else:
+            new_h = math.floor((h - self.crop['top']) / self.vertical_kernel_size)
+            group_num = math.floor(new_h / (self.correlation_group_pixel_height / self.vertical_kernel_size))
+            index_in_group = math.floor((new_h % (self.correlation_group_pixel_height / self.vertical_kernel_size)) / self.vertical_or_aggregation_size)
+
+        # if w < self.crop['left'] or w > self.image_shape[2] - self.crop['right']:
+        #     new_w = None  # Cropped out
+        # else:
+        #     new_w = math.floor((w - self.crop['left']) / self.horizontal_kernel_size)
+
+        return group_num, index_in_group
 
 
 if __name__ == "__main__":
@@ -598,5 +860,13 @@ if __name__ == "__main__":
         "example_configs",
         "example_config.json",
     )
-    av = AutoVarve(config_file=config_file, save_to_db=False)
+
+    human_labels_csv = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)),
+        "data",
+        "labeled_images",
+        "varve_locations.csv"
+    )
+
+    av = AutoVarve(config_file=config_file, save_to_db=False, human_labels_csv=human_labels_csv)
     av.execute()

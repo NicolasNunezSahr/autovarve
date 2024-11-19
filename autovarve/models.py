@@ -14,6 +14,8 @@ class PipeRun(models.Model):
     kernel_function_horizontal = models.CharField(max_length=50, null=True, blank=True)
     kernel_function_vertical = models.CharField(max_length=50, null=True, blank=True)
     pixel_change_threshold = models.FloatField(null=True, blank=True)
+    vertical_or_aggregation_size = models.IntegerField(null=True, blank=True, default=0)
+    column_fraction_threshold = models.FloatField(null=True, blank=True, default=0)
     created_at = models.DateTimeField(default=timezone.now)
     updated_at = models.DateTimeField(auto_now=True)
 
