@@ -225,7 +225,7 @@ class AutoVarve(object):
         # Plot histogram of counts
         self.plot_counts_histogram(varve_counts)
 
-        self.modify_image(varve_pixel_heights)
+        # self.modify_image(varve_pixel_heights)
 
     def load_images(self):
         """
@@ -552,7 +552,8 @@ class AutoVarve(object):
         save_filename = f'{save_basename}.txt'
         self.save_tensors_to_txt(above_threshold, save_filename=save_filename)
         if group_cols:
-            varve_counts, true_indices = self.count_horizontal_lines(tensor=above_threshold, group=group)
+            varve_counts, true_indices = self.count_horizontal_lines(tensor=above_threshold, group=group,
+                                                                     blur_size=self.vertical_or_aggregation_size)
             varve_counts = torch.tensor(varve_counts)
         else:
             varve_counts = above_threshold.sum(dim=2, keepdim=True)
@@ -560,29 +561,31 @@ class AutoVarve(object):
             true_indices = list(zip(true_indices[0].tolist(), true_indices[1].tolist()))
         return varve_counts, true_indices
 
-    def count_horizontal_lines(self, tensor, group=None):
+    def count_horizontal_lines(self, tensor, group=None, blur_size=3):
         # First, blur 3 rows together to increase collision probability
         N = tensor.shape[2]
-        output_size = math.ceil(N / 3)
+        width = tensor.shape[3]
+        output_size = math.ceil(N / blur_size)
 
-        result = torch.zeros((1, 1, output_size, 15), dtype=torch.bool, device=tensor.device)
+        result = torch.zeros((1, 1, output_size, width), dtype=torch.bool, device=tensor.device)
 
         # Process complete groups of 3
-        complete_groups = N // 3
+        complete_groups = N // blur_size
         if complete_groups > 0:
-            main_part = tensor[:, :, :complete_groups * 3, :]
-            reshaped = main_part.reshape(1, 1, -1, 3, 15)
+            main_part = tensor[:, :, :complete_groups * blur_size, :]
+            reshaped = main_part.reshape(1, 1, -1, blur_size, width)
             result[:, :, :complete_groups, :] = torch.any(reshaped, dim=3)
 
-        remaining = N % 3
+        remaining = N % blur_size
         if remaining > 0:
-            start_idx = complete_groups * 3
+            start_idx = complete_groups * blur_size
             remaining_values = tensor[:, :, start_idx:, :]
             result[:, :, -1, :] = torch.any(remaining_values, dim=2)
         if self.verbose:
             print(f'Blurring resulted in tensor of shape {result.shape}')
 
-        result = self.majority_vote_rows(result, threshold=math.ceil(result.shape[3] / 3), group=group)
+        result = self.majority_vote_rows(result, threshold=math.ceil(result.shape[3] * self.column_fraction_threshold),
+                                         group=group)
         true_indices = [i for i, value in enumerate(result.squeeze().tolist()) if value is True]
 
         if self.verbose:
@@ -612,9 +615,6 @@ class AutoVarve(object):
 
         if len(tensor.shape) != 4:
             raise ValueError(f"Expected 4D tensor, got shape {tensor.shape}")
-
-        if tensor.shape[3] != 15:
-            raise ValueError(f"Expected 15 columns, got {tensor.shape[3]}")
 
         if tensor.dtype != torch.bool:
             raise TypeError("Input tensor must contain boolean values")
@@ -947,5 +947,5 @@ if __name__ == "__main__":
         "varve_locations.csv"
     )
 
-    av = AutoVarve(config_file=config_file, save_to_db=False, human_labels_csv=human_labels_csv)
+    av = AutoVarve(config_file=config_file, save_to_db=True, human_labels_csv=human_labels_csv)
     av.execute()
