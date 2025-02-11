@@ -225,7 +225,7 @@ class AutoVarve(object):
         # Plot histogram of counts
         self.plot_counts_histogram(varve_counts)
 
-        # self.modify_image(varve_pixel_heights)
+        self.modify_image(varve_pixel_heights)
 
     def load_images(self):
         """
@@ -944,8 +944,8 @@ if __name__ == "__main__":
         os.path.dirname(os.path.dirname(__file__)),
         "data",
         "labeled_images",
-        "varve_locations.csv"
+        "human_labels.csv"
     )
 
-    av = AutoVarve(config_file=config_file, save_to_db=True, human_labels_csv=human_labels_csv)
+    av = AutoVarve(config_file=config_file, save_to_db=False, human_labels_csv=human_labels_csv)
     av.execute()

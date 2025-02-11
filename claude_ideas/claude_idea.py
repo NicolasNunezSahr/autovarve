@@ -4,6 +4,8 @@ from scipy import signal
 # from skimage import filters
 import matplotlib.pyplot as plt
 import os
+import sys
+import pandas as pd
 
 
 def create_varve_visualization(img, peaks, save_path=None):
@@ -36,7 +38,7 @@ def create_varve_visualization(img, peaks, save_path=None):
     return marked_img
 
 
-def crop_core_image(img, top=135, bottom=43673, left=2000, right=1025):
+def crop_core_image(img, top=0, bottom=43673, left=2000, right=1025):
     """
     Crop the image according to specified dimensions.
 
@@ -139,7 +141,7 @@ def process_core_image(image_path, debug=False, save_visualization=None):
     return len(peaks), gradient_normalized, peaks, marked_img
 
 
-def validate_results(image_path, manual_count=None, save_visualization=None):
+def validate_results(image_path, human_labels_path=None, save_visualization=None):
     """
     Process an image and validate results against manual count if provided.
 
@@ -153,25 +155,49 @@ def validate_results(image_path, manual_count=None, save_visualization=None):
         debug=True,
         save_visualization=save_visualization
     )
-    print(f"Detected {num_varves} varves")
+    print(f"Detected {num_varves} varves in the following pixel rows: {peaks}")
 
-    if manual_count is not None:
-        error = abs(manual_count - num_varves)
-        error_percentage = (error / manual_count) * 100
-        print(f"Manual count: {manual_count}")
-        print(f"Absolute error: {error}")
-        print(f"Error percentage: {error_percentage:.2f}%")
+    human_labels_df = pd.read_csv(human_labels_path)
+
+    if human_labels_path is not None:
+        correct_preds = []
+        incorrect_preds = []
+        for peak in peaks:
+            if is_within_labels_range(human_labels_df, pixel_index=peak):
+                correct_preds.append(peak)
+            else:
+                incorrect_preds.append(peak)
+
+        print(f'Varve accuracy: {len(correct_preds)/(len(correct_preds) + len(incorrect_preds))}.\n'
+              f'Correct preds: {correct_preds}')
+
+
 
     return num_varves, marked_img
 
 
-if __name__ == "__main__":
-    # Basic usage
-    num_varves, gradient_img, peak_locations, marked_img = process_core_image(os.path.join(
-        os.path.dirname(os.path.dirname(__file__)),
-        'data', 'images', 'D15-4Lspliced_no ruler.png'), debug=True)
+def is_within_labels_range(human_labels_df, pixel_index, leeway=10):
+    """
+    Determines whether pixel_index is contained within the dataframe.
+    :param human_labels_df:
+    :param pixel_index:
+    :param leeway:
+    :return:
+    """
+    cond = ((human_labels_df['start_pixel_row'] - leeway < pixel_index) &
+             (human_labels_df['end_pixel_row'] + leeway > pixel_index))
+    filtered_df = human_labels_df.loc[cond, :]
+    for index, row in filtered_df.iterrows():
+        if row['start_pixel_row'] - leeway <= pixel_index <= row['end_pixel_row'] + leeway:
+            return True
+    return False
 
-    # With validation against manual count
-    varve_count, marked_img = validate_results(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data',
-                                                    'images', 'D15-4Lspliced_no ruler.png'), manual_count=70,
-                                                save_visualization="varves_marked.jpg")
+
+
+
+if __name__ == "__main__":
+
+    # With validation against human labels
+    image_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'images', 'D15-4Lspliced_no ruler.png')
+    human_labels_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data', 'labeled_images', 'human_labels.csv')
+    varve_count, marked_img = validate_results(image_path, human_labels_path=human_labels_path, save_visualization="varves_marked.jpg")

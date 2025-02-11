@@ -1,0 +1,26 @@
+{
+  "verbose": 1,
+  "mode": "RGB",
+  "scale_pixel_value_max": 1,
+  "crop": {
+    "left": 2000,
+    "right": 1025,
+    "top": 135,
+    "bottom": 43673
+  },
+  "kernel_config": {
+    "horizontal": {
+      "size": 26,
+      "function": "MEDIAN"
+    },
+    "vertical": {
+      "size": 3,
+      "function": "MEDIAN"
+    }
+  },
+  "pixel_change_threshold": 0.05,
+  "correlation_group_size": 1000,
+  "vertical_or_aggregation_size": 3,
+  "column_fraction_threshold": 0.4,
+  "save_directory": "data/labeled_images"
+}
