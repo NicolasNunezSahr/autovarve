@@ -16,6 +16,7 @@ from datetime import datetime
 from matplotlib.colors import LinearSegmentedColormap
 from pathlib import Path
 import django
+from claude_ideas.claude_idea import compute_precision
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.append(str(PROJECT_ROOT))
@@ -217,6 +218,12 @@ class AutoVarve(object):
         varve_counts, varve_pixel_heights = self.generate_varve_counts(
             image_samples=image_tensors, threshold=self.pixel_change_threshold
         )
+
+        print(f'{len(varve_pixel_heights)} Varve indices found: {varve_pixel_heights}')
+
+        if self.human_labels_df is not None:
+            precision, correct_preds = compute_precision(human_labels_df=self.human_labels_df, pixel_index_pred_list=varve_pixel_heights)
+            print(f'Preecision = {precision}; Correct preds = {correct_preds}')
 
         # Save varve_counts
         if self.save_to_db:
@@ -589,8 +596,7 @@ class AutoVarve(object):
         true_indices = [i for i, value in enumerate(result.squeeze().tolist()) if value is True]
 
         if self.verbose:
-            print(f'Majority vote led to a tensor of shape {result.shape} with true indices: '
-                  f'\n{true_indices}')
+            print(f'Majority vote led to a tensor of shape {result.shape}')
 
         varve_count = result.sum(dim=2, keepdim=True)
 
@@ -723,7 +729,7 @@ class AutoVarve(object):
             )
             varve_counts_in_group = varve_counts_in_group.squeeze()
             if self.verbose:
-                print(f'Varve counts in group {i}: {varve_counts_in_group}')
+                print(f'Varve counts in group {i}: {varve_counts_in_group}.')
             if group_cols:
                 varve_count += float(varve_counts_in_group.item())
                 varve_pixel_heights.extend(self.get_varve_pixel_heights(group_num=i, indices=true_indices))

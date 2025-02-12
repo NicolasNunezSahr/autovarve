@@ -6,6 +6,7 @@ import matplotlib.pyplot as plt
 import os
 import sys
 import pandas as pd
+from typing import List
 
 
 def create_varve_visualization(img, peaks, save_path=None):
@@ -171,8 +172,6 @@ def validate_results(image_path, human_labels_path=None, save_visualization=None
         print(f'Varve accuracy: {len(correct_preds)/(len(correct_preds) + len(incorrect_preds))}.\n'
               f'Correct preds: {correct_preds}')
 
-
-
     return num_varves, marked_img
 
 
@@ -191,6 +190,21 @@ def is_within_labels_range(human_labels_df, pixel_index, leeway=10):
         if row['start_pixel_row'] - leeway <= pixel_index <= row['end_pixel_row'] + leeway:
             return True
     return False
+
+
+def compute_precision(human_labels_df: pd.DataFrame, pixel_index_pred_list: List):
+    correct_preds = []
+    incorrect_preds = []
+    for pixel_index_pred in pixel_index_pred_list:
+        if is_within_labels_range(human_labels_df, pixel_index=pixel_index_pred):
+            correct_preds.append(pixel_index_pred)
+        else:
+            incorrect_preds.append(pixel_index_pred)
+    precision = len(correct_preds) / (len(correct_preds) + len(incorrect_preds))
+    print(f'Varve precision: {precision}.\n'
+          f'Correct preds: {correct_preds}')
+
+    return precision, correct_preds
 
 
 
