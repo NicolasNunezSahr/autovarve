@@ -1,6 +1,6 @@
 {
   "verbose": 1,
-  "mode": "GRAY",
+  "mode": "RGB",
   "scale_pixel_value_max": 1,
   "crop": {
     "left": 2000,

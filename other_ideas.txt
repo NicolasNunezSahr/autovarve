@@ -1,0 +1,4 @@
+I will put other approaches and other investigations in this document.
+1. Supervised learning approach: label each varve, and train a vision model to identify varves.
+2. Ask an LMM and see if it can count varves.
+3. Compute trend analysis: i.e. cross-correlation of different columns; identify max cross-correlation
